@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "WebSteps",
+  "version": "1.0",
+  "description": "Records user interactions on webpages.",
+  "permissions": ["scripting", "activeTab", "storage", "downloads"],
+  "host_permissions": ["<all_urls>"],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
