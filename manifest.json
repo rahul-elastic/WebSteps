@@ -4,7 +4,7 @@
   "version": "1.0",
   "description": "Records user interactions on webpages.",
   "permissions": ["scripting", "activeTab", "storage", "downloads"],
-  "host_permissions": ["<all_urls>"],
+  "host_permissions": ["<all_urls>", "http://localhost:7001/*"],
   "action": {
     "default_popup": "popup.html"
   },
