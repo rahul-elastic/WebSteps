@@ -173,7 +173,7 @@ function storeActionsInBackground(tabId) {
 async function fetchProjects() {
   try {
     const token =
-      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MiwiaWF0IjoxNzQ1OTgzNjI2LCJleHAiOjE3NDYwNzAwMjZ9.FBXDrIIZ1rhEzz2xZfZUm3pfQ38mMeqMJoX8GXkUXzs";
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MiwiaWF0IjoxNzQ1OTg0NzQ1LCJleHAiOjE3NDYwNzExNDV9.mYN9R0aP1x-Lr2jxNawaXFOPeVosqPX0NInjf94H25I";
 
     console.log("Making projects request...");
     const response = await fetch("http://localhost:7001/api/projects", {
@@ -355,7 +355,6 @@ async function getAuthToken() {
 
 async function saveTestCaseToFlytest(formData) {
   try {
-    // Get authentication token
     const token = await getAuthToken();
 
     // Get the recorded actions from background
@@ -363,12 +362,28 @@ async function saveTestCaseToFlytest(formData) {
       chrome.runtime.sendMessage({ type: "getRecordedActions" }, resolve);
     });
 
-    if (!response || !response.actions || response.actions.length === 0) {
+    console.log(
+      "Response from getRecordedActions:",
+      JSON.stringify(response, null, 2)
+    );
+
+    if (!response || !response.actions || !Array.isArray(response.actions)) {
+      console.error("Invalid actions format:", response);
+      throw new Error("No actions recorded or invalid format");
+    }
+
+    if (response.actions.length === 0) {
       throw new Error("No actions recorded");
     }
 
-    const actions = response.actions;
-    console.log("Recorded actions:", actions);
+    const actions = response.actions.map((action) => ({
+      action: action.action,
+      selector: action.selector,
+      text: action.text,
+      value: action.value,
+    }));
+
+    console.log("Processed actions:", JSON.stringify(actions, null, 2));
 
     // Get current tab info
     const [tab] = await chrome.tabs.query({
@@ -380,12 +395,19 @@ async function saveTestCaseToFlytest(formData) {
       throw new Error("No active tab found");
     }
 
-    // Call the FlyTest API to generate English steps
-    console.log("Calling FlyTest API with data:", {
-      steps: actions,
+    // First generate English steps using OpenAI
+    const requestData = {
+      actions: actions,
       projectId: formData.projectId,
-    });
+      url: tab.url,
+    };
 
+    console.log(
+      "Sending request to generate steps:",
+      JSON.stringify(requestData, null, 2)
+    );
+
+    // Call the OpenAI API to generate English steps
     const apiResponse = await fetch(
       "http://localhost:7001/api/generate-test-steps",
       {
@@ -393,20 +415,20 @@ async function saveTestCaseToFlytest(formData) {
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
+          Origin: "chrome-extension://",
         },
-        body: JSON.stringify({
-          steps: actions,
-          projectId: formData.projectId,
-        }),
+        body: JSON.stringify(requestData),
       }
     );
 
+    const responseText = await apiResponse.text();
+    console.log("Raw API Response:", responseText);
+
     if (!apiResponse.ok) {
-      const errorText = await apiResponse.text();
       console.error("API Error Response:", {
         status: apiResponse.status,
         statusText: apiResponse.statusText,
-        body: errorText,
+        body: responseText,
       });
 
       if (apiResponse.status === 401) {
@@ -419,12 +441,12 @@ async function saveTestCaseToFlytest(formData) {
       throw new Error(
         `Failed to generate test steps: ${apiResponse.status} ${
           apiResponse.statusText
-        }${errorText ? ` - ${errorText}` : ""}`
+        }${responseText ? ` - ${responseText}` : ""}`
       );
     }
 
-    const responseData = await apiResponse.json();
-    console.log("API Response:", responseData);
+    const responseData = JSON.parse(responseText);
+    console.log("Parsed API Response:", responseData);
 
     if (
       !responseData.englishSteps ||
@@ -434,7 +456,7 @@ async function saveTestCaseToFlytest(formData) {
       throw new Error("Invalid response format from API");
     }
 
-    const { englishSteps } = responseData;
+    const englishSteps = responseData.englishSteps;
 
     // Display the English steps
     displayEnglishSteps(englishSteps);
@@ -445,7 +467,7 @@ async function saveTestCaseToFlytest(formData) {
       description: formData.description,
       projectId: formData.projectId,
       steps: englishSteps,
-      url: tab.url,
+      executed_code: actions,
     });
 
     // Create the test case under the selected project
@@ -456,12 +478,13 @@ async function saveTestCaseToFlytest(formData) {
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
+          Origin: "chrome-extension://",
         },
         body: JSON.stringify({
           name: formData.testCaseName,
           description: formData.description,
-          steps: englishSteps,
-          url: tab.url,
+          steps: englishSteps.join("\n"), // Join steps into a string with newlines
+          executed_code: JSON.stringify(actions), // Store original actions as executed_code
           status: "active",
         }),
       }
@@ -503,8 +526,8 @@ async function saveTestCaseToFlytest(formData) {
         const testCases = result.testCases || [];
         const localTestCaseData = {
           ...formData,
-          steps: actions,
-          englishSteps,
+          recordedActions: actions,
+          steps: englishSteps,
           recordedAt: new Date().toISOString(),
           url: tab.url,
           status: "completed",
