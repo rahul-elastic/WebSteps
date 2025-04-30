@@ -1,12 +1,42 @@
-window.__recording__ = false;
+// Initialize recording state
+let recordingState = false;
 const actions = [];
 // Make inputTimeouts a global variable
 window.inputTimeouts = {};
 // Store the field IDs or selectors that are currently being typed in
 const activeInputs = new Set();
 
-function isRecording() {
-  return window.__recording__;
+// Function to get recording state
+function getRecordingState() {
+  return recordingState;
+}
+
+// Function to set recording state
+function setRecordingState(state) {
+  recordingState = state;
+  window.__recording__ = state;
+
+  // If stopping recording, clean up
+  if (!state) {
+    stopRecording();
+  }
+}
+
+// Function to check if recording is active
+function isRecordingActive() {
+  return recordingState;
+}
+
+// Function to get recorded actions
+function getRecordedActions() {
+  return actions;
+}
+
+// Function to clear recorded actions
+function clearRecordedActions() {
+  actions.length = 0;
+  activeInputs.clear();
+  window.inputTimeouts = {};
 }
 
 function getUniqueSelector(el) {
@@ -73,7 +103,7 @@ function isDuplicateAction(newAction) {
 
 // Process only the meaningful click events
 document.addEventListener("click", (e) => {
-  if (!isRecording()) return;
+  if (!isRecordingActive()) return;
   const el = e.target;
 
   // Create click action
@@ -98,7 +128,7 @@ document.addEventListener("click", (e) => {
 document.addEventListener(
   "focus",
   (e) => {
-    if (!isRecording()) return;
+    if (!isRecordingActive()) return;
     const el = e.target;
 
     if (["input", "textarea", "select"].includes(el.tagName.toLowerCase())) {
@@ -122,7 +152,7 @@ document.addEventListener(
 document.addEventListener(
   "blur",
   (e) => {
-    if (!isRecording()) return;
+    if (!isRecordingActive()) return;
     const el = e.target;
 
     if (["input", "textarea", "select"].includes(el.tagName.toLowerCase())) {
@@ -164,7 +194,7 @@ document.addEventListener(
 
 // Enhanced debounced input handler
 document.addEventListener("input", (e) => {
-  if (!isRecording()) return;
+  if (!isRecordingActive()) return;
   const el = e.target;
 
   if (["input", "textarea"].includes(el.tagName.toLowerCase())) {
@@ -220,7 +250,7 @@ document.addEventListener("input", (e) => {
 
 // Handle form submissions to capture final values
 document.addEventListener("submit", (e) => {
-  if (!isRecording()) return;
+  if (!isRecordingActive()) return;
 
   // Finalize all active inputs before form submission
   activeInputs.forEach((selector) => {
@@ -292,18 +322,16 @@ window.getRecordedActions = () => {
   return cleanedActions;
 };
 
-// Listen for messages from background script
+// Listen for messages from popup
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type === "getRecordedActions") {
-    console.log("Message received to get recorded actions");
-    sendResponse({ actions: window.getRecordedActions() });
+  if (message.type === "getRecordingState") {
+    sendResponse({ isRecording: recordingState });
+  } else if (message.type === "setRecordingState") {
+    setRecordingState(message.isRecording);
+    sendResponse({ success: true });
+  } else if (message.type === "getRecordedActions") {
+    sendResponse({ actions });
   }
-
-  // Handle recording state changes
-  if (message.type === "setRecordingState" && message.state === false) {
-    stopRecording();
-  }
-
   return true;
 });
 

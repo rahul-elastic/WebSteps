@@ -169,16 +169,439 @@ function storeActionsInBackground(tabId) {
   });
 }
 
+// Add project management functions
+async function fetchProjects() {
+  try {
+    const token =
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MiwiaWF0IjoxNzQ1OTgzNjI2LCJleHAiOjE3NDYwNzAwMjZ9.FBXDrIIZ1rhEzz2xZfZUm3pfQ38mMeqMJoX8GXkUXzs";
+
+    console.log("Making projects request...");
+    const response = await fetch("http://localhost:7001/api/projects", {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+        Origin: "chrome-extension://",
+      },
+      credentials: "include",
+    });
+
+    console.log("Projects response status:", response.status);
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const data = await response.json();
+    console.log("Raw API response:", data);
+
+    if (!Array.isArray(data)) {
+      console.error("Projects response is not an array:", data);
+      throw new Error("Invalid projects data format - expected array");
+    }
+
+    // Map the projects to the format expected by the extension
+    const mappedProjects = data.map((project) => ({
+      id: project.id,
+      name: project.name,
+      description: project.description || "",
+      testcases: {
+        total: project.total_testcases || 0,
+        passing: project.passing_testcases || 0,
+        failing: project.failing_testcases || 0,
+        notRun: project.not_run_testcases || 0,
+      },
+      lastRunDate: project.last_run_date,
+      createdAt: project.created_at,
+      updatedAt: project.updated_at,
+    }));
+
+    console.log("Mapped projects for extension:", mappedProjects);
+    return mappedProjects;
+  } catch (error) {
+    console.error("Error in fetchProjects:", error);
+    console.error("Error details:", {
+      message: error.message,
+      stack: error.stack,
+    });
+    throw error;
+  }
+}
+
+async function populateProjectDropdown() {
+  const projectSelect = document.getElementById("projectName");
+  const projectError = document.getElementById("projectError");
+
+  try {
+    // Show loading state
+    projectSelect.innerHTML = '<option value="">Loading projects...</option>';
+    projectSelect.disabled = true;
+    projectError.style.display = "none";
+
+    const projects = await fetchProjects();
+    console.log("Projects to populate:", projects);
+
+    // Clear and enable the select
+    projectSelect.innerHTML = "";
+    projectSelect.disabled = false;
+
+    // Add default option
+    const defaultOption = document.createElement("option");
+    defaultOption.value = "";
+    defaultOption.textContent = "Select a project";
+    projectSelect.appendChild(defaultOption);
+
+    if (!projects || projects.length === 0) {
+      throw new Error("No projects found. Please create a project first.");
+    }
+
+    // Add projects from API
+    projects.forEach((project) => {
+      const option = document.createElement("option");
+      option.value = project.id;
+      option.textContent = `${project.name} (${project.testcases.total} tests)`;
+      projectSelect.appendChild(option);
+    });
+
+    projectError.style.display = "none";
+    return projects;
+  } catch (error) {
+    console.error("Error in populateProjectDropdown:", error);
+    projectSelect.innerHTML =
+      '<option value="">Failed to load projects</option>';
+    projectSelect.disabled = true;
+    projectError.textContent = error.message || "Failed to load projects";
+    projectError.style.display = "block";
+    throw error;
+  }
+}
+
+// Update showTestCaseForm to populate projects
+async function showTestCaseForm() {
+  const form = document.getElementById("testCaseForm");
+
+  try {
+    // Check if there are any recorded actions
+    const response = await new Promise((resolve) => {
+      chrome.runtime.sendMessage({ type: "getRecordedActions" }, resolve);
+    });
+
+    if (!response || !response.actions || response.actions.length === 0) {
+      updateStatusText(
+        "No actions recorded. Please record some actions first."
+      );
+      return;
+    }
+
+    console.log("Showing form with recorded actions:", response.actions);
+
+    // Show the form before populating projects
+    form.style.display = "block";
+
+    try {
+      // Populate projects dropdown
+      await populateProjectDropdown();
+      document.getElementById("testCaseName").focus();
+    } catch (error) {
+      console.error("Error populating projects:", error);
+      const projectError = document.getElementById("projectError");
+      projectError.textContent = "Failed to load projects. Please try again.";
+      projectError.style.display = "block";
+    }
+  } catch (error) {
+    console.error("Error showing form:", error);
+    updateStatusText("Error: " + error.message);
+  }
+}
+
+function hideTestCaseForm() {
+  const form = document.getElementById("testCaseForm");
+  form.style.display = "none";
+
+  // Clear all input fields
+  document.getElementById("testCaseName").value = "";
+  document.getElementById("projectName").value = "";
+  document.getElementById("description").value = "";
+}
+
+function displayEnglishSteps(englishSteps) {
+  const englishStepsDiv = document.getElementById("englishSteps");
+  const englishStepsList = document.getElementById("englishStepsList");
+
+  // Clear previous steps
+  englishStepsList.innerHTML = "";
+
+  // Add new steps
+  englishSteps.forEach((step) => {
+    const li = document.createElement("li");
+    li.textContent = step;
+    englishStepsList.appendChild(li);
+  });
+
+  // Show the steps section
+  englishStepsDiv.style.display = "block";
+}
+
+// Add token management functions at the top
+async function getAuthToken() {
+  // Get token from local storage first
+
+  // If no token in storage, use hardcoded token
+  const token =
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MiwiaWF0IjoxNzQ1OTgyNTk4LCJleHAiOjE3NDYwNjg5OTh9.erlIC-o6HttfCKo3qHDw0HH3syf0CQUcrmA9AhaiKtE";
+
+  return token;
+}
+
+async function saveTestCaseToFlytest(formData) {
+  try {
+    // Get authentication token
+    const token = await getAuthToken();
+
+    // Get the recorded actions from background
+    const response = await new Promise((resolve) => {
+      chrome.runtime.sendMessage({ type: "getRecordedActions" }, resolve);
+    });
+
+    if (!response || !response.actions || response.actions.length === 0) {
+      throw new Error("No actions recorded");
+    }
+
+    const actions = response.actions;
+    console.log("Recorded actions:", actions);
+
+    // Get current tab info
+    const [tab] = await chrome.tabs.query({
+      active: true,
+      currentWindow: true,
+    });
+
+    if (!tab) {
+      throw new Error("No active tab found");
+    }
+
+    // Call the FlyTest API to generate English steps
+    console.log("Calling FlyTest API with data:", {
+      steps: actions,
+      projectId: formData.projectId,
+    });
+
+    const apiResponse = await fetch(
+      "http://localhost:7001/api/generate-test-steps",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          steps: actions,
+          projectId: formData.projectId,
+        }),
+      }
+    );
+
+    if (!apiResponse.ok) {
+      const errorText = await apiResponse.text();
+      console.error("API Error Response:", {
+        status: apiResponse.status,
+        statusText: apiResponse.statusText,
+        body: errorText,
+      });
+
+      if (apiResponse.status === 401) {
+        await chrome.storage.local.remove(["authToken"]);
+        throw new Error(
+          "Authentication failed. Please try again with a valid token."
+        );
+      }
+
+      throw new Error(
+        `Failed to generate test steps: ${apiResponse.status} ${
+          apiResponse.statusText
+        }${errorText ? ` - ${errorText}` : ""}`
+      );
+    }
+
+    const responseData = await apiResponse.json();
+    console.log("API Response:", responseData);
+
+    if (
+      !responseData.englishSteps ||
+      !Array.isArray(responseData.englishSteps)
+    ) {
+      console.error("Invalid API response format:", responseData);
+      throw new Error("Invalid response format from API");
+    }
+
+    const { englishSteps } = responseData;
+
+    // Display the English steps
+    displayEnglishSteps(englishSteps);
+
+    // Create test case in FlyTest
+    console.log("Creating test case with data:", {
+      name: formData.testCaseName,
+      description: formData.description,
+      projectId: formData.projectId,
+      steps: englishSteps,
+      url: tab.url,
+    });
+
+    // Create the test case under the selected project
+    const testCaseResponse = await fetch(
+      `http://localhost:7001/api/testcases/project/${formData.projectId}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          name: formData.testCaseName,
+          description: formData.description,
+          steps: englishSteps,
+          url: tab.url,
+          status: "active",
+        }),
+      }
+    );
+
+    if (!testCaseResponse.ok) {
+      const errorText = await testCaseResponse.text();
+      console.error("Test Case API Error:", {
+        status: testCaseResponse.status,
+        statusText: testCaseResponse.statusText,
+        body: errorText,
+      });
+
+      if (testCaseResponse.status === 401) {
+        await chrome.storage.local.remove(["authToken"]);
+        throw new Error(
+          "Authentication failed. Please try again with a valid token."
+        );
+      }
+
+      throw new Error(
+        `Failed to create test case: ${testCaseResponse.status} ${
+          testCaseResponse.statusText
+        }${errorText ? ` - ${errorText}` : ""}`
+      );
+    }
+
+    const testCaseData = await testCaseResponse.json();
+    console.log("Test case created:", testCaseData);
+
+    // Store in chrome.storage.local
+    return new Promise((resolve, reject) => {
+      chrome.storage.local.get(["testCases"], (result) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+
+        const testCases = result.testCases || [];
+        const localTestCaseData = {
+          ...formData,
+          steps: actions,
+          englishSteps,
+          recordedAt: new Date().toISOString(),
+          url: tab.url,
+          status: "completed",
+          flytestId: testCaseData.id,
+        };
+        testCases.push(localTestCaseData);
+
+        chrome.storage.local.set({ testCases }, () => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+          } else {
+            resolve(testCaseData);
+          }
+        });
+      });
+    });
+  } catch (error) {
+    console.error("Error saving test case:", error);
+    throw error;
+  }
+}
+
+// Add function to get pending test cases
+function getPendingTestCases() {
+  return new Promise((resolve, reject) => {
+    chrome.storage.local.get(["testCases"], (result) => {
+      if (chrome.runtime.lastError) {
+        reject(chrome.runtime.lastError);
+      } else {
+        const testCases = result.testCases || [];
+        resolve(testCases);
+      }
+    });
+  });
+}
+
+// Add function to clear test cases after successful API sync
+function clearSyncedTestCases() {
+  return new Promise((resolve, reject) => {
+    chrome.storage.local.set({ testCases: [] }, () => {
+      if (chrome.runtime.lastError) {
+        reject(chrome.runtime.lastError);
+      } else {
+        resolve();
+      }
+    });
+  });
+}
+
+// Update the form submission handler
 document.addEventListener("DOMContentLoaded", () => {
   syncStateWithBackground();
+
+  const saveButton = document.getElementById("saveTestCase");
+
+  saveButton.addEventListener("click", async (e) => {
+    e.preventDefault();
+
+    const projectSelect = document.getElementById("projectName");
+    const projectError = document.getElementById("projectError");
+
+    if (!projectSelect.value) {
+      projectError.textContent = "Please select a project";
+      projectError.style.display = "block";
+      return;
+    }
+
+    const formData = {
+      testCaseName: document.getElementById("testCaseName").value,
+      projectId: projectSelect.value, // Use selected project ID
+      description: document.getElementById("description").value,
+    };
+
+    try {
+      updateStatusText("Saving test case...");
+      await saveTestCaseToFlytest(formData);
+      updateStatusText("Test case saved successfully!");
+      hideTestCaseForm();
+    } catch (error) {
+      console.error("Error saving test case:", error);
+      updateStatusText("Error saving test case: " + error.message);
+    }
+  });
+
+  // Add cancel button handler
+  document.getElementById("cancelForm").addEventListener("click", () => {
+    hideTestCaseForm();
+    updateStatusText("Test case creation cancelled");
+  });
 });
 
+// Update the toggle button handler
 document.getElementById("toggle").addEventListener("click", async () => {
   try {
-    // Toggle recording state
-    isRecording = !isRecording;
-    updateButtonState();
-    updateStatusText();
+    // Disable the button while processing
+    const toggleButton = document.getElementById("toggle");
+    toggleButton.disabled = true;
 
     const [tab] = await chrome.tabs.query({
       active: true,
@@ -188,47 +611,81 @@ document.getElementById("toggle").addEventListener("click", async () => {
     if (!tab) {
       console.error("No active tab found");
       updateStatusText("Error: No active tab found");
+      toggleButton.disabled = false;
       return;
     }
 
-    // Notify background of state change
-    chrome.runtime.sendMessage({
-      type: "setRecordingState",
-      isRecording: isRecording,
-    });
-
-    // If stopping recording, clear any pending input timeouts and store actions
-    if (!isRecording) {
-      updateStatusText("Finalizing recording...");
-      await clearPendingInputs(tab.id);
-
-      // Try to store actions in background
+    // First inject the content script if not already injected
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ["content.js"],
+      });
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    } catch (error) {
+      console.log("Content script injection error:", error);
       try {
-        await storeActionsInBackground(tab.id);
-        updateStatusText("Recording saved");
-      } catch (error) {
-        console.error("Error storing actions:", error);
-        updateStatusText("Error: No actions recorded");
+        await chrome.tabs.reload(tab.id);
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          files: ["content.js"],
+        });
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      } catch (reloadError) {
+        console.error(
+          "Failed to reload and inject content script:",
+          reloadError
+        );
+        throw new Error("Please refresh the page and try again");
       }
     }
 
-    // Update recording state in the content script
-    chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      func: (status) => {
-        console.log("Setting recording status to:", status);
-        window.__recording__ = status;
+    // Toggle recording state
+    isRecording = !isRecording;
+    updateButtonState();
+    updateStatusText(
+      isRecording ? "Starting recording..." : "Stopping recording..."
+    );
 
-        // If stopping recording, ensure inputTimeouts is defined as a global
-        if (!status && typeof window.inputTimeouts === "undefined") {
-          window.inputTimeouts = {};
-        }
-      },
-      args: [isRecording],
-    });
+    // Update content script and background states
+    await Promise.all([
+      new Promise((resolve) => {
+        chrome.tabs.sendMessage(
+          tab.id,
+          { type: "setRecordingState", isRecording },
+          resolve
+        );
+      }),
+      new Promise((resolve) => {
+        chrome.runtime.sendMessage(
+          { type: "setRecordingState", isRecording },
+          resolve
+        );
+      }),
+    ]);
+
+    // If stopping recording, handle the recorded actions
+    if (!isRecording) {
+      await clearPendingInputs(tab.id);
+      try {
+        await storeActionsInBackground(tab.id);
+        console.log("Actions stored, showing form...");
+        await showTestCaseForm();
+      } catch (error) {
+        console.error("Error handling recorded actions:", error);
+        updateStatusText("Error: " + error.message);
+      }
+    } else {
+      hideTestCaseForm();
+    }
   } catch (error) {
     console.error("Error toggling recording:", error);
-    updateStatusText("Error toggling recording");
+    updateStatusText("Error: " + error.message);
+    isRecording = !isRecording; // Revert state on error
+    updateButtonState();
+  } finally {
+    toggleButton.disabled = false;
   }
 });
 
@@ -257,59 +714,70 @@ document.getElementById("download").addEventListener("click", async () => {
     if (isRecording) {
       isRecording = false;
       updateButtonState();
+      updateStatusText("Stopping recording...");
 
       // Notify background of state change
-      chrome.runtime.sendMessage({
-        type: "setRecordingState",
-        isRecording: false,
+      await new Promise((resolve) => {
+        chrome.runtime.sendMessage(
+          {
+            type: "setRecordingState",
+            isRecording: false,
+          },
+          resolve
+        );
       });
 
       // Update content script
-      chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        func: () => {
-          window.__recording__ = false;
-        },
+      await new Promise((resolve) => {
+        chrome.tabs.sendMessage(
+          tab.id,
+          {
+            type: "setRecordingState",
+            isRecording: false,
+          },
+          resolve
+        );
       });
+
+      // Clear any pending input timeouts
+      await clearPendingInputs(tab.id);
+
+      // Store the actions
+      await storeActionsInBackground(tab.id);
     }
 
-    // Clear any pending input timeouts
-    await clearPendingInputs(tab.id);
+    // Get the actions from background
+    const response = await new Promise((resolve) => {
+      chrome.runtime.sendMessage({ type: "getRecordedActions" }, resolve);
+    });
 
-    // First store the actions in the background
-    try {
-      await storeActionsInBackground(tab.id);
+    if (!response || !response.actions || response.actions.length === 0) {
+      throw new Error("No actions to download");
+    }
 
-      // Then tell the background to download them
-      chrome.runtime.sendMessage({ type: "downloadActions" }, (response) => {
-        console.log("Download response:", response);
-
-        if (response && response.error) {
-          alert("Download error: " + response.error);
-          updateStatusText("Download failed: " + response.error);
-        } else {
-          updateStatusText("Download initiated");
-        }
-
-        // Re-enable the button
-        downloadButton.disabled = false;
-        downloadButton.innerText = "Download Actions";
-      });
-    } catch (error) {
-      console.error("Error preparing download:", error);
-      alert(
-        "No actions were recorded. Make sure to click 'Start Recording' before performing actions on the page."
-      );
-      updateStatusText("No actions to download");
+    // Trigger the download
+    chrome.runtime.sendMessage({ type: "downloadActions" }, (response) => {
+      if (chrome.runtime.lastError) {
+        console.error("Download error:", chrome.runtime.lastError);
+        updateStatusText("Error: " + chrome.runtime.lastError.message);
+        alert("Error downloading actions: " + chrome.runtime.lastError.message);
+      } else if (response && response.error) {
+        console.error("Download error:", response.error);
+        updateStatusText("Error: " + response.error);
+        alert("Error downloading actions: " + response.error);
+      } else {
+        console.log("Download success:", response);
+        updateStatusText("Download completed");
+      }
 
       // Re-enable the button
       downloadButton.disabled = false;
       downloadButton.innerText = "Download Actions";
-    }
+    });
   } catch (error) {
     console.error("Error downloading actions:", error);
+    updateStatusText("Error: " + error.message);
     alert("Error downloading actions: " + error.message);
-    updateStatusText("Download error: " + error.message);
 
     // Re-enable the button
     const downloadButton = document.getElementById("download");
@@ -333,61 +801,61 @@ document.getElementById("copy-text").addEventListener("click", async () => {
       return;
     }
 
-    // Clear any pending input timeouts before copying
-    await clearPendingInputs(tab.id);
+    // If currently recording, stop recording first
+    if (isRecording) {
+      isRecording = false;
+      updateButtonState();
+      updateStatusText("Stopping recording...");
 
-    // Get stored actions from background
-    chrome.runtime.sendMessage({ type: "getRecordedActions" }, (response) => {
-      if (response && response.actions && response.actions.length > 0) {
-        const text = actionsToReadableText(response.actions);
-        navigator.clipboard.writeText(text).then(() => {
-          alert("Readable steps copied to clipboard!");
-          updateStatusText("Steps copied to clipboard");
-        });
-      } else {
-        // Try to get actions from content script
-        chrome.scripting.executeScript(
+      // Notify background of state change
+      await new Promise((resolve) => {
+        chrome.runtime.sendMessage(
           {
-            target: { tabId: tab.id },
-            func: () => {
-              console.log("Getting recorded actions for text copy");
-              return window.getRecordedActions
-                ? window.getRecordedActions()
-                : null;
-            },
+            type: "setRecordingState",
+            isRecording: false,
           },
-          (results) => {
-            if (
-              !results ||
-              !results[0] ||
-              results[0].result === null ||
-              results[0].result === undefined ||
-              !results[0].result.length
-            ) {
-              console.error(
-                "No recorded actions found for text copy:",
-                results
-              );
-              alert(
-                "No actions were recorded. Make sure to click 'Start Recording' before performing actions on the page."
-              );
-              updateStatusText("No actions to copy");
-              return;
-            }
-
-            const actions = results[0].result;
-            const text = actionsToReadableText(actions);
-            navigator.clipboard.writeText(text).then(() => {
-              alert("Readable steps copied to clipboard!");
-              updateStatusText("Steps copied to clipboard");
-            });
-          }
+          resolve
         );
-      }
+      });
+
+      // Update content script
+      await new Promise((resolve) => {
+        chrome.tabs.sendMessage(
+          tab.id,
+          {
+            type: "setRecordingState",
+            isRecording: false,
+          },
+          resolve
+        );
+      });
+
+      // Clear any pending input timeouts
+      await clearPendingInputs(tab.id);
+
+      // Store the actions
+      await storeActionsInBackground(tab.id);
+    }
+
+    // Get the actions from background
+    const response = await new Promise((resolve) => {
+      chrome.runtime.sendMessage({ type: "getRecordedActions" }, resolve);
     });
+
+    if (!response || !response.actions || response.actions.length === 0) {
+      throw new Error("No actions to copy");
+    }
+
+    // Convert actions to readable text
+    const text = actionsToReadableText(response.actions);
+
+    // Copy to clipboard
+    await navigator.clipboard.writeText(text);
+    updateStatusText("Steps copied to clipboard");
+    alert("Readable steps copied to clipboard!");
   } catch (error) {
     console.error("Error copying text:", error);
+    updateStatusText("Error: " + error.message);
     alert("Error copying text: " + error.message);
-    updateStatusText("Error copying: " + error.message);
   }
 });
